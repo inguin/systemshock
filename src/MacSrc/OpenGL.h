@@ -19,6 +19,7 @@ void opengl_resize(int width, int height);
 bool should_opengl_swap();
 void opengl_backup_view();
 void opengl_swap_and_restore();
+void opengl_change_palette();
 
 void opengl_set_viewport(int x, int y, int width, int height);
 int opengl_draw_tmap(int n, g3s_phandle *vp, grs_bitmap *bm);
@@ -29,6 +30,8 @@ int opengl_draw_star(long c, int n_verts, g3s_phandle *p);
 void opengl_begin_stars();
 void opengl_end_stars();
 void opengl_set_stencil(int v);
+void opengl_start_frame();
+void opengl_end_frame();
 
 #else
 
@@ -42,6 +45,7 @@ static void opengl_resize(int width, int height) {}
 static bool should_opengl_swap() { return false; }
 static void opengl_backup_view() {}
 static void opengl_swap_and_restore() {}
+static void opengl_change_palette() {}
 
 static void opengl_set_viewport(int x, int y, int width, int height) {}
 static int opengl_draw_tmap(int n, g3s_phandle *vp, grs_bitmap *bm) { return 0; }
@@ -49,9 +53,11 @@ static int opengl_light_tmap(int n, g3s_phandle *vp, grs_bitmap *bm) { return 0;
 static int opengl_bitmap(grs_bitmap *bm, int n, grs_vertex **vpl, grs_tmap_info *ti) { return 0; }
 static int opengl_draw_poly(long c, int n_verts, g3s_phandle *p, char gour_flag) { return 0; }
 static int opengl_draw_star(long c, int n_verts, g3s_phandle *p) { return 0; }
-static void opengl_begin_stars() { }
-static void opengl_end_stars() { }
+static void opengl_begin_stars() {}
+static void opengl_end_stars() {}
 static void opengl_set_stencil(int v) {}
+static void opengl_start_frame() {};
+static void opengl_end_frame() {};
 
 #endif
 

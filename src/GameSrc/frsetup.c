@@ -646,6 +646,9 @@ int fr_start_view(void) {
     uchar old_cam_type;
     int detail;
 
+    if(should_opengl_swap())
+        opengl_start_frame();
+
     // check detail for canvas sizing
     gr_set_canvas(&_fr->draw_canvas);
     if (_fr_curflags & FR_PICKUPM_MASK) {
@@ -828,6 +831,13 @@ int fr_send_view(void) {
 
     g3_end_frame();
 
+    if(use_opengl()) {
+        opengl_backup_view();
+    }
+
+    if(should_opengl_swap())
+        opengl_end_frame();
+
     // stereo support - closedown ??
 #ifdef STEREO_SUPPORT
     if (((_fr_curflags & (FR_PICKUPM_MASK | FR_HACKCAM_MASK)) == 0) && inp6d_stereo_active &&
@@ -902,5 +912,6 @@ int fr_send_view(void) {
         (*fr_mouse_show)();
     } else
         gr_set_canvas(grd_screen_canvas);
+
     _fr_ret;
 }

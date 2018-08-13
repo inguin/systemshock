@@ -309,16 +309,21 @@ void SetSDLPalette(int index, int count, uchar *pal)
 	SDL_SetPaletteColors(sdlPalette, gamePalette, 0, count);
 	SDL_SetSurfacePalette(drawSurface, sdlPalette);
 	SDL_SetSurfacePalette(offscreenDrawSurface, sdlPalette);
+
+	opengl_change_palette();
 }
 
 void SDLDraw()
 {
-        sdlPalette->colors[255].a = 0x00;
+	if (should_opengl_swap()) {
+		opengl_swap_and_restore();
+	}
+
+	sdlPalette->colors[255].a = 0x00;
 	SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, drawSurface);
-        sdlPalette->colors[255].a = 0xff;
+	sdlPalette->colors[255].a = 0xff;
 
 	if (should_opengl_swap()) {
-		opengl_backup_view();
 		SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
 	}
 
@@ -326,12 +331,8 @@ void SDLDraw()
 	SDL_RenderCopy(renderer, texture, &srcRect, NULL);
 	SDL_DestroyTexture(texture);
 
-	if (should_opengl_swap()) {
-		opengl_swap_and_restore();
-	} else {
-		SDL_RenderPresent(renderer);
-		SDL_RenderClear(renderer);
-	}
+	SDL_RenderPresent(renderer);
+	SDL_RenderClear(renderer);
 }
 
 void CaptureMouse(bool capture)

@@ -32,6 +32,7 @@ extern "C" {
     #include "Prefs.h"
     #include "Shock.h"
     #include "faketime.h"
+    #include "render.h"
 
     extern SDL_Renderer *renderer;
     extern SDL_Palette *sdlPalette;
@@ -68,6 +69,9 @@ static int phys_offset_y;
 
 static int render_width;
 static int render_height;
+
+static bool palette_dirty = false;
+static bool blend_enabled = false;
 
 // View matrix; Z offset experimentally tweaked for near-perfect alignment
 // between GL projection and software projection (sprite screen coordinates)
@@ -139,18 +143,17 @@ static GLuint loadShader(GLenum type, const char *filename) {
 
 int init_opengl() {
     DEBUG("Initializing OpenGL");
-    context = SDL_GL_CreateContext(window);
+
+    context = SDL_GL_GetCurrentContext();
+    if(context == NULL) {
+        ERROR("No opengl context!");
+        return 1;
+    }
 
 #ifdef _WIN32
     glewExperimental = GL_TRUE;
     GLenum err = glewInit();
 #endif
-
-    glEnable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    glEnable(GL_ALPHA_TEST);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glAlphaFunc(GL_GEQUAL, 0.05f);
 
     GLuint vertexShader = loadShader(GL_VERTEX_SHADER, "main.vert");
     GLuint textureShader = loadShader(GL_FRAGMENT_SHADER, "texture.frag");
@@ -169,12 +172,12 @@ int init_opengl() {
     glGenTextures(1, &dynTexture);
     glGenTextures(1, &viewBackupTexture);
 
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+
     return 0;
 }
 
 void opengl_resize(int width, int height) {
-    SDL_GL_MakeCurrent(window, context);
-
     int logical_width, logical_height;
     SDL_RenderGetLogicalSize(renderer, &logical_width, &logical_height);
 
@@ -200,17 +203,42 @@ void opengl_resize(int width, int height) {
     // allocate a buffer for the framebuffer backup
     glBindTexture(GL_TEXTURE_2D, viewBackupTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, phys_width, phys_height, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+
+    INFO("OpenGL Resize %i %i", width, height);
+
+    // Redraw the background in the new resolution
+    extern uchar wrapper_screenmode_hack;
+    if(wrapper_screenmode_hack) {
+        render_run();
+        wrapper_screenmode_hack = FALSE;
+    }
+}
+
+void opengl_change_palette() {
+    palette_dirty = TRUE;
+}
+
+static void set_blend_mode(bool enabled) {
+    if(blend_enabled != enabled) {
+        blend_enabled = enabled;
+        if(blend_enabled) {
+            glEnable(GL_BLEND);
+        }
+        else {
+            glDisable(GL_BLEND);
+        }
+    }
 }
 
 bool use_opengl() {
-    return gShockPrefs.doUseOpenGL &&
+    return gShockPrefs.doUseOpenGL && context != NULL &&
            (_current_loop == GAME_LOOP || _current_loop == FULLSCREEN_LOOP) &&
            !global_fullmap->cyber &&
            !(_fr_curflags & (FR_PICKUPM_MASK | FR_HACKCAM_MASK));
 }
 
 bool should_opengl_swap() {
-    return gShockPrefs.doUseOpenGL &&
+    return gShockPrefs.doUseOpenGL && context != NULL &&
            (_current_loop == GAME_LOOP || _current_loop == FULLSCREEN_LOOP) &&
            !global_fullmap->cyber;
 }
@@ -218,7 +246,6 @@ bool should_opengl_swap() {
 void opengl_backup_view() {
     // save the framebuffer into a texture after rendering the 3D view(s)
     // but before blitting the HUD overlay
-    SDL_GL_MakeCurrent(window, context);
 
     glViewport(phys_offset_x, phys_offset_y, phys_width, phys_height);
     glBindTexture(GL_TEXTURE_2D, viewBackupTexture);
@@ -228,10 +255,8 @@ void opengl_backup_view() {
 void opengl_swap_and_restore() {
     // restore the view backup (without HUD overlay) for incremental
     // updates in the subsequent frame
-    SDL_GL_MakeCurrent(window, context);
-    SDL_GL_SwapWindow(window);
 
-    glViewport(phys_offset_x, phys_offset_y, phys_width, phys_height);
+    set_blend_mode(false);
     glUseProgram(textureShaderProgram);
 
     GLint uniView = glGetUniformLocation(textureShaderProgram, "view");
@@ -262,6 +287,8 @@ void opengl_swap_and_restore() {
     glVertex3f(-1.0f, 1.0f, 0.0f);
     glEnd();
 
+    glUseProgram(0);
+
     // check OpenGL error
     GLenum err = glGetError();
     if (err != GL_NO_ERROR)
@@ -287,7 +314,6 @@ void opengl_set_viewport(int x, int y, int width, int height) {
     render_width = width;
     render_height = height;
 
-    SDL_GL_MakeCurrent(window, context);
     int scaled_width = width * view_scale;
     int scaled_height = height * view_scale;
     int scaled_x = phys_offset_x + x * view_scale;
@@ -306,7 +332,8 @@ void opengl_set_viewport(int x, int y, int width, int height) {
 }
 
 static bool opengl_cache_texture(CachedTexture toCache, grs_bitmap *bm) {
-    SDL_GL_MakeCurrent(window, context);
+
+    glPixelStorei(GL_UNPACK_ROW_LENGTH,bm->row);
 
     if(texturesByBitsPtr.size() < MAX_CACHED_TEXTURES) {
         // We have enough room, generate the new texture
@@ -338,8 +365,6 @@ void opengl_clear_texture_cache() {
         return;
 
     DEBUG("Clearing OpenGL texture cache.");
-
-    SDL_GL_MakeCurrent(window, context);
 
     std::map<uint8_t *, CachedTexture>::iterator iter;
     for(iter = texturesByBitsPtr.begin(); iter != texturesByBitsPtr.end(); iter++) {
@@ -424,7 +449,7 @@ static void set_texture(grs_bitmap *bm) {
     bool isDirty = false;
 
     if(t->locked) {
-        if(t->lastDrawTime != *tmd_ticks) {
+        if(palette_dirty && t->lastDrawTime != *tmd_ticks) {
             // Locked surfaces only need to update their palettes once per frame
 
             SDL_Palette *palette = createPalette(bm->flags & BMF_TRANS);
@@ -457,6 +482,7 @@ static void set_texture(grs_bitmap *bm) {
     t->lastDrawTime = *tmd_ticks;
 
     if(isDirty) {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH,bm->row);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bm->w, bm->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, t->converted->pixels);   
     }
 }
@@ -490,7 +516,8 @@ int opengl_light_tmap(int n, g3s_phandle *vp, grs_bitmap *bm) {
         return CLIP_ALL;
     }
 
-    SDL_GL_MakeCurrent(window, context);
+    set_blend_mode(bm->flags & BMF_TRANS);
+
     glUseProgram(textureShaderProgram);
 
     GLint uniView = glGetUniformLocation(textureShaderProgram, "view");
@@ -534,7 +561,8 @@ int opengl_bitmap(grs_bitmap *bm, int n, grs_vertex **vpl, grs_tmap_info *ti) {
         return CLIP_ALL;
     }
 
-    SDL_GL_MakeCurrent(window, context);
+    set_blend_mode(bm->flags & BMF_TRANS);
+
     glUseProgram(textureShaderProgram);
 
     GLint uniView = glGetUniformLocation(textureShaderProgram, "view");
@@ -591,7 +619,6 @@ int opengl_draw_poly(long c, int n_verts, g3s_phandle *p, char gour_flag) {
         return CLIP_ALL;
     }
 
-    SDL_GL_MakeCurrent(window, context);
     glUseProgram(colorShaderProgram);
 
     GLint uniView = glGetUniformLocation(colorShaderProgram, "view");
@@ -652,8 +679,6 @@ void opengl_set_stencil(int v) {
 }
 
 void opengl_begin_stars() {
-    SDL_GL_MakeCurrent(window, context);
-
     glPointSize(2.5f);
     glEnable(GL_POINT_SMOOTH);
 
@@ -674,8 +699,6 @@ void opengl_end_stars() {
 }
 
 int opengl_draw_star(long c, int n_verts, g3s_phandle *p) {
-    SDL_GL_MakeCurrent(window, context);
-
     GLint tcAttrib = glGetAttribLocation(textureShaderProgram, "texcoords");
     GLint lightAttrib = glGetAttribLocation(textureShaderProgram, "light");
 
@@ -697,6 +720,38 @@ int opengl_draw_star(long c, int n_verts, g3s_phandle *p) {
     glEnd();
 
     return CLIP_NONE;
+}
+
+void opengl_start_frame() {
+    // Set up for level rendering
+    SDL_GL_MakeCurrent(window, context);
+
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glEnable(GL_ALPHA_TEST);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glAlphaFunc(GL_GEQUAL, 0.05f);
+    glEnable(GL_TEXTURE_2D);
+}
+
+void opengl_end_frame() {
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    // Reset back to immediate mode
+    glLoadIdentity();
+    glUseProgram(0);
+
+    // Reset the viewport back to fullscreen, preserving aspect ratio
+    float scalex, scaley;
+    SDL_RenderGetScale(renderer, &scalex, &scaley);
+
+    SDL_Rect wr;
+    SDL_RenderGetViewport(renderer, &wr);
+    glViewport(wr.x * scalex, wr.y * scaley, wr.w * scalex, wr.h * scaley);
+
+    palette_dirty = false;
 }
 
 #endif // USE_OPENGL
